@@ -1,0 +1,5 @@
+{
+  "vocab_size": 4242,
+  "encoding": "utf-8",
+  "tokenizer": "char"
+}
