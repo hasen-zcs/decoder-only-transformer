@@ -15,6 +15,7 @@ text = text.replace("\r\n", "\n")
 text = text.replace("\r", "\n")
 
 lines = [line.strip() for line in text.split("\n") if line.strip()]
+# print(lines[:10])
 text = "\n".join(lines)
 
 print("清理后字符数：", len(text))
