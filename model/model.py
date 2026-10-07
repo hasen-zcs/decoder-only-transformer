@@ -127,6 +127,7 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits, targets)
         return logits
     
+    
 
 if __name__ == "__main__":
     config = GPTConfig
