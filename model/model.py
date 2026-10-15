@@ -8,20 +8,12 @@ import math
 import torch
 from torch import nn
 import torch.nn.functional as F
-from structure import *
+from .structure import *
 import json
+from .Config import GPTConfig
 
 
-class GPTConfig:
-    vocab_size = 4242
-    block_size = 128
-    n_embd = 128
-    ffn_dim = 256
-    b_head = 4
-    n_layer = 4
-    dropout = 0.1
 
-    VOCAB_PATH = "data/vocab.json"
 
 
 class GPTEmbedding(nn.Module):
@@ -97,6 +89,7 @@ class GPTLayer(nn.Module):
 class GPT(nn.Module):
     def __init__(self, config:GPTConfig):
         super().__init__()
+        self.config = config
 
         self.embedding = GPTEmbedding(config)
         self.layers = nn.ModuleList([
@@ -123,9 +116,49 @@ class GPT(nn.Module):
 
         if targets is not None:
             B, T, V = logits.shape
-            logits = B
-            loss = F.cross_entropy(logits, targets)
+            # cross_entropy是比较概率分布和目标之间的差值
+            loss = F.cross_entropy(
+                logits.view(B*T, V), 
+                targets.view(B*T))
+            return logits, loss
         return logits
+
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens):
+        """
+            根据已有的 token 序列，逐个生成新的 token。
+
+            idx:
+                [B, T]
+                B = batch size
+                T = 当前已有序列长度
+
+            max_new_tokens:
+                最多生成多少个新 token
+        """
+        self.eval()
+        for _ in range(max_new_tokens):
+            # 如果当前序列超过 block_size，只保留最后 block_size 个 token
+            idx_cond = idx[:, -self.config.block_size:]
+
+            # 前向传播
+            logits = self(idx_cond)
+
+            # 只取最后一个位置的预测
+            logits = logits[:, -1, :]
+            # [B, vocab_size]
+
+            # 选择概率最大的 token
+            next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            # [B, 1]
+
+            # 拼接到原来的序列后面
+            idx = torch.cat((idx, next_token), dim=1)
+
+        return idx
+
+
+
     
     
 
@@ -142,13 +175,31 @@ if __name__ == "__main__":
     seq = [stoi[ch] for ch in seq]
     # print(seq)
     seq = torch.tensor(seq, dtype=torch.long)
-    seq = seq.unsqueeze(0)
+    idx = seq.unsqueeze(0)
+    x = idx[:, :-1]
+    target = idx[:, 1:]
 
     gpt = GPT(config)
 
-    logits = gpt(seq)
+    logits, loss = gpt(x, target)
 
     print("logits shape:", logits.shape)
+    print("loss:", loss.item())
+
+    # 验证反向传播
+    loss.backward()
+    print(
+        "lm_head grad:",
+        gpt.lm_head.weight.grad is None
+    )
+
+    print(
+        "embedding grad:",
+        gpt.embedding.token_embedding.weight.grad is None
+    )
+
+
+
     # 词嵌入(输入必须是long类型)
     # embedder = GPTEmbedding(config)
     # x = embedder(seq)
