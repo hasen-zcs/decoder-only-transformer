@@ -11,6 +11,12 @@ class GPTConfig:
     # 训练次数
     epochs = 1000
 
+    # ------训练技巧超参数-------
+    base_lr = 1e-3        # 学习率峰值 
+    min_lr = 1e-4         # 学习率衰减下限
+    warmup_steps = 200    # warmup步数
+    grad_clip = 1.0       # 梯度裁剪阈值
+
     # 配置
     device = "cuda"
 

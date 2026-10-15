@@ -18,10 +18,10 @@ gpt.load_state_dict(
                )
 
 
-prompts = ["从前", "宋霸", "她打开门", "女儿"]
+prompts = ["从前", "宋霸出刀", "她打开门", "女儿"]
 for p in prompts:
     idx = tokenizer.encode(p).to(config.device).unsqueeze(0)
-    out = gpt.generate(idx=idx, max_new_tokens=200)
+    out = gpt.generate(idx=idx, max_new_tokens=2000)
     text = tokenizer.decode(out[0].cpu().tolist())
     print(f"[提示]{p}\n{text}\n{'='*40}")
     with open("output/生成结果.txt", "a", encoding="utf-8") as f:

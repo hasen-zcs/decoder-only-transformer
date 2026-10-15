@@ -101,8 +101,11 @@ class GPT(nn.Module):
 
         self.lm_head = nn.Linear(
             config.n_embd,
-            config.vocab_size
+            config.vocab_size,
+            bias=False
         )
+        # 权重共享：lm_head 直接服用 token 嵌入矩阵
+        self.lm_head.weight = self.embedding.token_embedding.weight
 
     def forward(self, x, targets=None):
         x = self.embedding(x)
