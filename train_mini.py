@@ -92,7 +92,7 @@ def train_epochs(max_steps, start_step=None):
 
 # 测试是否可用
 # print("train batch:", train_dataset.get_batch()[0].shape)
-
+start_step = 0
 # checkpoints断点重续
 p = Path("checkpoints/step_latest.pt")
 if p.exists():
@@ -104,11 +104,7 @@ if p.exists():
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     start_step = checkpoint["step"]
 
-if not p.exists():
-    train_epochs(config.epochs, 0)
-
-if start_step <= config.epochs:
-    train_epochs(config.epochs, start_step)
+train_epochs(config.epochs, start_step)
 
 
 

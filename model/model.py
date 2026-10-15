@@ -124,7 +124,7 @@ class GPT(nn.Module):
         return logits
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens):
+    def generate(self, idx, max_new_tokens, temperature=0.8, top_k=50):
         """
             根据已有的 token 序列，逐个生成新的 token。
 
@@ -140,17 +140,21 @@ class GPT(nn.Module):
         for _ in range(max_new_tokens):
             # 如果当前序列超过 block_size，只保留最后 block_size 个 token
             idx_cond = idx[:, -self.config.block_size:]
-
             # 前向传播
             logits = self(idx_cond)
-
             # 只取最后一个位置的预测
-            logits = logits[:, -1, :]
+            logits = logits[:, -1, :] / temperature
             # [B, vocab_size]
 
-            # 选择概率最大的 token
-            next_token = torch.argmax(logits, dim=-1, keepdim=True)
-            # [B, 1]
+            # # 选择概率最大的 token
+            # next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            # # [B, 1]
+
+            # temperature + top-k
+            v, _  = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float("inf")
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
 
             # 拼接到原来的序列后面
             idx = torch.cat((idx, next_token), dim=1)
