@@ -5,6 +5,7 @@ from torch import nn
 from Dataset import MyDataset
 from model.Config import GPTConfig
 from pathlib import Path
+import csv
 import math
 
 def get_lr(step, max_steps, base_lr=1e-3, warmup_steps=200, min_lr=1e-4):
@@ -60,6 +61,25 @@ def evaluate(model, dataset, eval_steps, device="cuda"):
 
     return sum(losses) / len(losses)
 
+
+# ---------- 训练日志（供 matplotlib 画 loss 曲线） ----------
+LOG_FILE = Path("log") / "training_log.csv"
+
+def log_metrics(step, train_loss, val_loss=None, lr=None, grad_norm=None):
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    new = not LOG_FILE.exists()
+    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["step", "train_loss", "val_loss", "lr", "grad_norm"])
+        w.writerow([
+            step,
+            f"{train_loss:.6f}",
+            f"{val_loss:.6f}" if val_loss is not None else "",
+            f"{lr:.6e}" if lr is not None else "",
+            f"{grad_norm:.4f}" if grad_norm is not None else "",
+        ])
+
 def train_epochs(max_steps, start_step=None):
     if start_step is None:
         start_step = 0
@@ -97,6 +117,17 @@ def train_epochs(max_steps, start_step=None):
                 f"val loss {val_loss:.4f},"
                 f"lr {optimizer.param_groups[0]['lr']:.2e},"
                 f"grad_norm {grad_norm:.2f}"
+            )
+            log_metrics(
+                step + 1, loss.item(), val_loss,
+                optimizer.param_groups[0]["lr"], grad_norm
+            )
+
+        elif (step+1) % 10 == 0:
+            # 每10步记一次 train loss，曲线更平滑
+            log_metrics(
+                step + 1, loss.item(), None,
+                optimizer.param_groups[0]["lr"], grad_norm
             )
 
         if (step+1) % 1000 == 0:
