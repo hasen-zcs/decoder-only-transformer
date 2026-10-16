@@ -1,5 +1,10 @@
 {
-  "vocab_size": 4242,
+  "vocab_size": 6027,
   "encoding": "utf-8",
-  "tokenizer": "char"
+  "tokenizer": "char",
+  "eot": "<|endoftext|>",
+  "n_books": 9,
+  "n_train_books": 8,
+  "train_chars": 37824234,
+  "val_chars": 4723677
 }

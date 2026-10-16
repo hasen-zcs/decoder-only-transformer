@@ -1,25 +1,34 @@
+import torch
 from model.model import GPT
 from model.Config import GPTConfig
-import torch
 
+torch.manual_seed(0)
 config = GPTConfig()
 gpt = GPT(config)
-
-print("freqs_cos:", gpt.freqs_cos.shape)
-# 期望 (128, 32) = block_size × head_dim
-
-print("权重共享生效:", gpt.lm_head.weight is gpt.embedding.token_embedding.weight)
-# 期望 True
-
-print("state_dict 键:", list(gpt.state_dict().keys()))
-# 应无 position_embedding / add_norm*；应有 ln1/ln2、freqs_cos、freqs_sin
-
+gpt.eval()
 x = torch.randint(0, config.vocab_size, (4, 128))
-logits, loss = gpt(x, x.roll(-1, dims=1))
-loss.backward()
-print("随机初始化 loss:", loss.item())
-# 期望 ≈ ln(4242) = 8.35（随机模型的水平）
 
-total = sum(p.numel() for p in gpt.parameters())
-print(f"总参数: {total:,}")
-# 期望 ≈ 1,071,488，比阶段二(≈1,089,024)少约 1.7 万
+# 1) 看"最大的那个 logit"是不是同一个 token（公共分量的指纹）
+
+topi = gpt(x).argmax(dim=-1)
+print("argmax==当前token 的比例:", round((topi == x).float().mean().item(), 4))
+
+topi = gpt(x).argmax(dim=-1)                 # [4,128]
+ids, counts = topi.unique(return_counts=True)
+print("top1 token 分布(出现次数>100的):")
+print(ids[counts > 100].tolist(), counts[counts > 100].tolist())
+v_star = ids[counts > 100][0].item()
+
+# 2) 逐层分解：残差流在 e_v* 方向上的分量有多大
+es = gpt.lm_head.weight[v_star]
+es = es / es.norm()
+h = gpt.embedding(x)
+print("proj@embedding:   ", round((h @ es).mean().item(), 2))
+for i, layer in enumerate(gpt.layers):
+    h = layer(h, cos=gpt.freqs_cos[:128], sin=gpt.freqs_sin[:128])
+    print(f"proj@layer{i+1}后:   ", round((h @ es).mean().item(), 2))
+hn = gpt.norm(h)
+print("proj@final norm:  ", round((hn @ es).mean().item(), 2),
+      "  ← 若假设成立应 ≈ 8")
+
+
