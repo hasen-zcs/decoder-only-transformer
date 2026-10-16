@@ -138,12 +138,20 @@ class MultiHeadAttention(nn.Module):
         self.W_o = nn.Linear(d_model, d_model) 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, cos=None, sin=None):
         batch_size = query.size(0)
 
-        Q = self.W_q(query).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        K = self.W_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        V = self.W_v(value).view(batch_size, -1, self.num_heads, self.d_v).transpose(1, 2)
+        Q = self.W_q(query).view(batch_size, -1, self.num_heads, self.d_k)
+        K = self.W_k(key).view(batch_size, -1, self.num_heads, self.d_k)
+        V = self.W_v(value).view(batch_size, -1, self.num_heads, self.d_v)
+
+        # RoPE:再B, T, H, D]布局（还没transpose之前）旋转Q和K
+        if cos is not None:
+            Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
 
         x, attn_weights = scaled_dot_product_attention(Q, K, V, mask)
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)

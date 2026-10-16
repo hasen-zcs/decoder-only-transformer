@@ -15,7 +15,7 @@ from .Config import GPTConfig
 
 
 
-
+# 阶段三 将位置编码换成旋转位置编码
 class GPTEmbedding(nn.Module):
     def __init__(self, config:GPTConfig):
         super().__init__()
@@ -23,29 +23,17 @@ class GPTEmbedding(nn.Module):
             config.vocab_size,
             config.n_embd
         )
-        # 可学习位置编码
-        self.position_embedding = nn.Embedding(
-            config.block_size,
-            config.n_embd
-        )
 
     def forward(self, x):
-        B, T = x.shape
-
         token_emb = self.token_embedding(x)
-        position = torch.arange(
-            T,
-            device=x.device
-        )
-
-        position_emb = self.position_embedding(position)
-
-        return token_emb + position_emb
+        return token_emb
 
 
 class GPTLayer(nn.Module):
     def __init__(self, config:GPTConfig):
         super().__init__()
+        self.rms_norm1 = RMSNorm(config.n_embd)
+        self.rms_norm2 = RMSNorm(config.n_embd)
 
         self.self_attn = MultiHeadAttention(
             config.n_embd, 
@@ -59,17 +47,8 @@ class GPTLayer(nn.Module):
             config.dropout
             )
         
-        self.add_norm1 = AddNorm(
-            config.n_embd,
-            config.dropout
-            )
-        
-        self.add_norm2 = AddNorm(
-            config.n_embd,
-            config.dropout
-            )
 
-    def forward(self, x):
+    def forward(self, x, cos=None, sin=None):
         # 生成mask
         T = x.size(1)
         mask = torch.tril(
@@ -80,11 +59,16 @@ class GPTLayer(nn.Module):
             )
         )
 
-        att_out, _ = self.self_attn(x, x, x, mask=mask)
+        # 先RMSNorm再进入网络
+        h = self.rms_norm1(x)
 
-        x = self.add_norm1(x, att_out)
-        x = self.add_norm2(x, self.ffn(x))
-        return (x)
+        att_out, _ = self.self_attn(h, h, h, mask=mask, cos=cos, sin=sin)
+
+        x = x + att_out # 残差
+
+        x = x + self.ffn(self.rms_norm2(x)) # FFN
+
+        return x
 
 class GPT(nn.Module):
     def __init__(self, config:GPTConfig):
@@ -97,7 +81,8 @@ class GPT(nn.Module):
             for _ in range(config.n_layer)
         ])
 
-        self.norm = nn.LayerNorm(config.n_embd)
+        # self.norm = nn.LayerNorm(config.n_embd)
+        self.norm = RMSNorm(config.n_embd)
 
         self.lm_head = nn.Linear(
             config.n_embd,
@@ -107,11 +92,23 @@ class GPT(nn.Module):
         # 权重共享：lm_head 直接服用 token 嵌入矩阵
         self.lm_head.weight = self.embedding.token_embedding.weight
 
+        # RoPE预计算(阶段三)
+        head_dim = config.n_embd//config.b_head
+        freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, end=config.block_size)
+        self.register_buffer("freqs_cos", freqs_cos)
+        self.register_buffer("freqs_sin", freqs_sin)
+
+
     def forward(self, x, targets=None):
         x = self.embedding(x)
 
+        T = x.size(1)
+        # 取当前序列长度T对应的RoPE表（形状[T, head_dim]
+        cos = self.freqs_cos[:T]
+        sin = self.freqs_sin[:T]
+
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, cos=cos, sin=sin)
 
         x = self.norm(x)
 
