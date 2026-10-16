@@ -4,6 +4,7 @@ class GPTConfig:
     n_embd = 128
     ffn_dim = 256
     b_head = 4
+    n_kv_head = 2
     n_layer = 8
     dropout = 0.1
     batch_size = 64

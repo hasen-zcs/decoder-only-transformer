@@ -117,6 +117,50 @@ def scaled_dot_product_attention(query, key, value, mask=None):
                                     attention_weights)
     return torch.matmul(attention_weights, value), attention_weights
 
+class GroupQueryAttention(nn.Module):
+    def __init__(self, d_model, num_heads, n_kv_heads, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0, "d_model不能被num_heads整除"
+        assert num_heads % n_kv_heads == 0, "num_heads不能被你n_kv_heads整除"
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.n_kv_heads = n_kv_heads
+        self.n_rep = num_heads // n_kv_heads # 计算一个Q匹配多少个kv组
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads
+
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, n_kv_heads * self.d_k)    # GQA：128 → n_kv_heads*32
+        self.W_v = nn.Linear(d_model, n_kv_heads * self.d_v)    # GQA：128 → n_kv_heads*32
+        self.W_o = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key, value, mask=None, cos=None, sin=None):
+        batch_size = query.size(0)
+
+        Q = self.W_q(query).view(batch_size, -1, self.num_heads, self.d_k)
+        K = self.W_k(key).view(batch_size, -1, self.n_kv_heads, self.d_k)   # 注意：n_kv_heads
+        V = self.W_v(value).view(batch_size, -1, self.n_kv_heads, self.d_v) # 注意：n_kv_heads
+
+        # RoPE：[B, T, H, D] 布局（还没transpose之前）旋转 Q 和 K
+        # cos/sin 是 [T, d_k] → unsqueeze(1) → [T, 1, d_k]，对 2 个 KV 头照常广播
+        if cos is not None:
+            Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+
+        # GQA 核心：把 n_kv_heads 个 K/V 头复制成 num_heads 个，每 query 头一份
+        K = repeat_kv(K, self.n_rep)
+        V = repeat_kv(V, self.n_rep)
+
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+
+        x, attn_weights = scaled_dot_product_attention(Q, K, V, mask)
+        x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        x = self.dropout(x)
+        return self.W_o(x), attn_weights
+
 
 class MultiHeadAttention(nn.Module):
     """

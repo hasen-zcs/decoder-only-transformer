@@ -35,9 +35,10 @@ class GPTLayer(nn.Module):
         self.rms_norm1 = RMSNorm(config.n_embd)
         self.rms_norm2 = RMSNorm(config.n_embd)
 
-        self.self_attn = MultiHeadAttention(
+        self.self_attn = GroupQueryAttention(
             config.n_embd, 
             config.b_head,
+            config.n_kv_head,
             config.dropout
             )
         
@@ -167,40 +168,55 @@ class GPT(nn.Module):
     
 
 if __name__ == "__main__":
-    config = GPTConfig
-    seq = "你好世界！"
 
-    # 导入词表
-    with open(config.VOCAB_PATH, "r", encoding="utf-8") as f:
-        stoi = json.load(f)
-
-    itos = {int(i):ch for ch, i in stoi.items()}
-    # 把词仍进词表
-    seq = [stoi[ch] for ch in seq]
-    # print(seq)
-    seq = torch.tensor(seq, dtype=torch.long)
-    idx = seq.unsqueeze(0)
-    x = idx[:, :-1]
-    target = idx[:, 1:]
-
+    config = GPTConfig()
     gpt = GPT(config)
+    a = gpt.layers[0].self_attn
+    print(type(a).__name__)                            # GroupedQueryAttention
+    print("W_k:", a.W_k.weight.shape, " W_v:", a.W_v.weight.shape)   # [64,128] [64,128]
+    print("params:", sum(p.numel() for p in gpt.parameters()))        # 期望 1,697,280
 
-    logits, loss = gpt(x, target)
+    x = torch.randint(0, config.vocab_size, (2, 128))
+    logits, loss = gpt(x, x.roll(-1, dims=1))
+    print("loss:", round(loss.item(), 2))                          # 90~110
+    print("argmax==x:", (logits.argmax(-1) == x).float().mean().item())  # ≈1.0
 
-    print("logits shape:", logits.shape)
-    print("loss:", loss.item())
 
-    # 验证反向传播
-    loss.backward()
-    print(
-        "lm_head grad:",
-        gpt.lm_head.weight.grad is None
-    )
 
-    print(
-        "embedding grad:",
-        gpt.embedding.token_embedding.weight.grad is None
-    )
+    # config = GPTConfig
+    # seq = "你好世界！"
+
+    # # 导入词表
+    # with open(config.VOCAB_PATH, "r", encoding="utf-8") as f:
+    #     stoi = json.load(f)
+
+    # itos = {int(i):ch for ch, i in stoi.items()}
+    # # 把词仍进词表
+    # seq = [stoi[ch] for ch in seq]
+    # # print(seq)
+    # seq = torch.tensor(seq, dtype=torch.long)
+    # idx = seq.unsqueeze(0)
+    # x = idx[:, :-1]
+    # target = idx[:, 1:]
+
+    # gpt = GPT(config)
+
+    # logits, loss = gpt(x, target)
+
+    # print("logits shape:", logits.shape)
+    # print("loss:", loss.item())
+
+    # # 验证反向传播
+    # loss.backward()
+    # print(
+    #     "lm_head grad:",
+    #     gpt.lm_head.weight.grad is None
+    # )
+
+    # print(
+    #     "embedding grad:",
+    #     gpt.embedding.token_embedding.weight.grad is None
+    # )
 
 
 
