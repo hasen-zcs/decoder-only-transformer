@@ -1,5 +1,5 @@
 class GPTConfig:
-    vocab_size = 4242
+    vocab_size = 6027
     block_size = 128
     n_embd = 128
     ffn_dim = 256

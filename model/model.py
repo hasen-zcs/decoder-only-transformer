@@ -39,7 +39,8 @@ class GPTLayer(nn.Module):
             config.n_embd, 
             config.b_head,
             config.n_kv_head,
-            config.dropout
+            config.dropout,
+            max_len=config.block_size
             )
         
         self.ffn = PositionWiseFFN(
@@ -49,7 +50,7 @@ class GPTLayer(nn.Module):
             )
         
 
-    def forward(self, x, cos=None, sin=None):
+    def forward(self, x, cos=None, sin=None, k_cache=None, v_cache=None):
         # 生成mask
         T = x.size(1)
         mask = torch.tril(
@@ -63,13 +64,15 @@ class GPTLayer(nn.Module):
         # 先RMSNorm再进入网络
         h = self.rms_norm1(x)
 
-        att_out, _ = self.self_attn(h, h, h, mask=mask, cos=cos, sin=sin)
+        att_out, _, K_new, V_new = self.self_attn(h, h, h, mask=mask, cos=cos, sin=sin, 
+                                    k_cache=k_cache, v_cache=v_cache
+                                    )
 
         x = x + att_out # 残差
 
         x = x + self.ffn(self.rms_norm2(x)) # FFN
 
-        return x
+        return x, K_new, V_new
 
 class GPT(nn.Module):
     def __init__(self, config:GPTConfig):
@@ -100,16 +103,27 @@ class GPT(nn.Module):
         self.register_buffer("freqs_sin", freqs_sin)
 
 
-    def forward(self, x, targets=None):
+    def forward(self, x, targets=None, k_caches=None, v_caches=None,
+                start_pos=0, cos=None, sin=None):
         x = self.embedding(x)
 
         T = x.size(1)
         # 取当前序列长度T对应的RoPE表（形状[T, head_dim]
-        cos = self.freqs_cos[:T]
-        sin = self.freqs_sin[:T]
+        # RoPE 表：调用方显式传了就用传的（generate 会传长表）；
+        # 没传则从注册 buffer 按 start_pos 切（训练时 start_pos=0，和原来一样）
+        if cos is None:
+            cos = self.freqs_cos[start_pos:start_pos + T]
+            sin = self.freqs_sin[start_pos:start_pos + T]
 
-        for layer in self.layers:
-            x = layer(x, cos=cos, sin=sin)
+        for i, layer in enumerate(self.layers):
+            layer_k = k_caches[i] if k_caches is not None else None
+            layer_v = v_caches[i] if v_caches is not None else None
+            x, K_new, V_new = layer(x, cos=cos, sin=sin,
+                                    k_cache=layer_k, v_cache=layer_v)
+            if k_caches is not None:
+                k_caches[i] = K_new     # 原地更新，调用方的 list 直接拿到新 cache
+                v_caches[i] = V_new
+
 
         x = self.norm(x)
 
@@ -126,6 +140,78 @@ class GPT(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=0.8, top_k=50):
+        """
+             KV cache 推理：
+            prefill：prompt 窗口（≤block_size）一次 forward，各层 K/V 写入 cache
+            decode ：每步只 forward 最后 1 个新 token，新 Q 乘【全部缓存的】K/V
+            绝对位置：prompt 占 0..T0-1，第 s 个新 token 位置 = T0 + s
+            窗口：cache 超 block_size 时注意力内部自动只留最近 block_size 个
+        """
+        self.eval()
+
+        config = self.config
+
+        head_dim = config.n_embd // config.b_head
+        rope_cos, rope_sin = precompute_freqs_cis(
+            head_dim, end=config.block_size + max_new_tokens + 8
+        )
+
+        rope_sin = rope_sin.to(idx.device)
+        rope_cos = rope_cos.to(idx.device)
+
+        idx_cond = idx[:, -config.block_size:]
+        T0 = idx_cond.size(1)
+
+        # 8 层 = 8 对独立 cache
+        k_caches = [None] * config.n_layer
+        v_caches = [None] * config.n_layer
+
+         # prefill（1 次）
+        logits = self(
+            idx_cond,
+            k_caches=k_caches, v_caches=v_caches,
+            start_pos=0,
+            cos=rope_cos[:T0], sin=rope_sin[:T0],
+        )
+
+        for s in range(max_new_tokens):
+            # 计算新token的位置
+            pos = T0 + s
+
+            # # 如果当前序列超过 block_size，只保留最后 block_size 个 token
+            # idx_cond = idx[:, -self.config.block_size:]
+            # # 前向传播
+            # logits = self(idx_cond)
+            # # 只取最后一个位置的预测
+
+            logits = logits[:, -1, :] / temperature
+            # [B, vocab_size]
+
+            # # 选择概率最大的 token
+            # next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            # # [B, 1]
+
+            # temperature + top-k
+            v, _  = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float("inf")
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+
+            # 拼接到原来的序列后面
+            idx = torch.cat((idx, next_token), dim=1)
+
+            # 计算新token的概率分布
+            logits = self(
+                next_token,
+                k_caches=k_caches, v_caches=v_caches,
+                start_pos=pos,
+                cos=rope_cos[pos:pos+1], sin=rope_sin[pos:pos+1]
+            )
+
+        return idx
+
+    @torch.no_grad()
+    def generate_nocache(self, idx, max_new_tokens, temperature=0.8, top_k=50):
         """
             根据已有的 token 序列，逐个生成新的 token。
 

@@ -118,7 +118,7 @@ def scaled_dot_product_attention(query, key, value, mask=None):
     return torch.matmul(attention_weights, value), attention_weights
 
 class GroupQueryAttention(nn.Module):
-    def __init__(self, d_model, num_heads, n_kv_heads, dropout=0.1):
+    def __init__(self, d_model, num_heads, n_kv_heads, dropout=0.1, max_len=None):
         super().__init__()
         assert d_model % num_heads == 0, "d_model不能被num_heads整除"
         assert num_heads % n_kv_heads == 0, "num_heads不能被你n_kv_heads整除"
@@ -130,13 +130,15 @@ class GroupQueryAttention(nn.Module):
         self.d_k = d_model // num_heads
         self.d_v = d_model // num_heads
 
+        self.max_len = max_len
+
         self.W_q = nn.Linear(d_model, d_model)
         self.W_k = nn.Linear(d_model, n_kv_heads * self.d_k)    # GQA：128 → n_kv_heads*32
         self.W_v = nn.Linear(d_model, n_kv_heads * self.d_v)    # GQA：128 → n_kv_heads*32
         self.W_o = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key, value, mask=None, cos=None, sin=None):
+    def forward(self, query, key, value, mask=None, cos=None, sin=None, k_cache=None, v_cache=None):
         batch_size = query.size(0)
 
         Q = self.W_q(query).view(batch_size, -1, self.num_heads, self.d_k)
@@ -147,6 +149,16 @@ class GroupQueryAttention(nn.Module):
         # cos/sin 是 [T, d_k] → unsqueeze(1) → [T, 1, d_k]，对 2 个 KV 头照常广播
         if cos is not None:
             Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+
+        if k_cache is not None:
+            K = torch.cat([k_cache, K], dim = 1)
+            V = torch.cat([v_cache, V], dim = 1)
+            # 窗口超限
+            if self.max_len is not None and K.size(1) > self.max_len:
+                K = K[:, -self.max_len:, :, :]
+                V = V[:, -self.max_len:, :, :]
+
+        K_new, V_new = K, V
 
         # GQA 核心：把 n_kv_heads 个 K/V 头复制成 num_heads 个，每 query 头一份
         K = repeat_kv(K, self.n_rep)
@@ -159,7 +171,7 @@ class GroupQueryAttention(nn.Module):
         x, attn_weights = scaled_dot_product_attention(Q, K, V, mask)
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
         x = self.dropout(x)
-        return self.W_o(x), attn_weights
+        return self.W_o(x), attn_weights, K_new, V_new
 
 
 class MultiHeadAttention(nn.Module):
